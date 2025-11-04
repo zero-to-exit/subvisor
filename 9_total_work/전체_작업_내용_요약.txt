@@ -1,0 +1,447 @@
+================================================================================
+YouTube 광고 비디오 프레임 추출 및 LLM 평가 파이프라인 - 전체 작업 요약
+================================================================================
+
+작업 일시: 2024년
+작업 디렉토리: /Users/jeff/python/9_total_work/
+
+================================================================================
+1. 프로젝트 개요
+================================================================================
+
+목표: YouTube 광고 비디오에서 고품질 프레임을 추출하고, LLM(ChatGPT, Gemini)을 
+      사용하여 프레임을 평가 및 분석하는 전 자동화 파이프라인 구축
+
+주요 단계:
+  1) YouTube 광고 비디오 URL 수집 (1분 ± 30초 길이)
+  2) 비디오 다운로드
+  3) 프레임 추출 및 품질 평가
+  4) 유사도 기반 그룹화 및 최종 선별
+  5) ChatGPT를 이용한 프레임 평가 (배치 처리)
+  6) Gemini를 이용한 프레임 평가 (배치 처리)
+
+================================================================================
+2. 단계별 작업 상세
+================================================================================
+
+2.1 YouTube URL 수집
+-------------------
+스크립트: 1.collect_youtube_ytdlp.py
+도구: yt-dlp
+방법: YouTube 검색 API를 사용하여 광고 비디오 검색
+조건:
+  - 영상 길이: 30초 ~ 90초 (1분 ± 30초)
+  - 중복 제거
+  - 메타데이터 추출 (제목, 길이, 조회수, 채널 등)
+
+결과:
+  - 파일: youtube_ads_1000.csv
+  - 총 수집된 URL: 937개 (중복 제거 후)
+  - 메타데이터: index, video_id, url, title, duration, duration_seconds, 
+                views, upload_date, channel
+
+예시 비디오:
+  - [공익광고협의회] 2005 1분의 배려 (31초, 284,084 views)
+  - 이건 그냥, 평범한 헤드폰 광고 (55초, 1,523,422 views)
+
+
+2.2 비디오 다운로드
+------------------
+스크립트: 2.download_youtube.py
+도구: yt-dlp
+저장 위치: downloads/index0/
+형식: MP4
+
+테스트 다운로드:
+  - 비디오 인덱스 0: video_0_iZXK1R_nqgc.mp4 (3.29 MB)
+  - 해상도: 640x480
+  - FPS: 29.97
+  - 총 프레임 수: 902
+  - 실제 길이: 30.1초
+
+
+2.3 프레임 추출 및 품질 평가
+----------------------------
+스크립트: 3.extract_frame.py
+도구: OpenCV, scenedetect
+
+단계 1: 전체 프레임 추출
+  - 비디오에서 모든 프레임 추출
+  - 예: 30초 비디오 기준 약 900개 프레임
+
+단계 2: 블러 프레임 필터링 및 별도 저장
+  - 블러 점수 계산: Laplacian variance 사용
+  - 블러 임계값: 150.0 미만인 프레임을 블러 프레임으로 분류
+  - 저장 위치: extracted_frames/blurry_frames/
+  - 결과: 299개 블러 프레임 별도 저장
+
+단계 3: 시간 순서 기반 유사도 그룹화
+  - 알고리즘: group_frames_by_similarity_temporal()
+  - 방법:
+    * 시간 순서대로 프레임 처리
+    * 최근 그룹의 마지막 몇 프레임과 비교 (5초 시간 윈도우)
+    * 히스토그램 상관관계로 유사도 계산
+    * 유사도 임계값: 이진 탐색으로 최적화 (목표 그룹 수 = 영상 길이 ± 5)
+  - 목표: 영상 길이와 비슷한 수의 그룹 생성
+    * 예: 30초 영상 → 약 25-35개 그룹
+  - 결과: 27개 그룹 생성 (30초 영상 기준)
+
+단계 4: 각 그룹에서 품질 점수 상위 2개만 유지
+  - 품질 점수 계산 기준:
+    1. 블러 (Sharpness): Laplacian variance
+    2. 클리핑: 히스토그램 분석 (과노출/과소노출)
+    3. 밝기 균형: 평균 밝기 100-180 선호
+    4. 대비 (Contrast): 표준 편차
+    5. 색상 풍부도: BGR 채널 분산
+  - 각 그룹에서 상위 2개 프레임만 유지 (keep_top_n=2)
+  - 나머지 프레임 삭제
+  - 저장 위치: extracted_frames/group_XX/
+  - 파일명 형식: frame_XX_t[시간]s_score[품질점수]_nqgc.jpg
+  - 최종 결과: 27개 그룹 × 2개 = 54개 프레임 (일부 그룹은 1개)
+
+실제 결과:
+  - 총 그룹 수: 27개
+  - 최종 선별 프레임: 약 38개
+  - 블러 프레임: 299개
+
+주요 함수:
+  - calculate_blur_score(): 블러 점수 계산 (Laplacian variance)
+  - calculate_quality_score(): 종합 품질 점수 계산
+  - group_frames_by_similarity_temporal(): 시간 순서 기반 유사도 그룹화
+  - save_frames_by_groups(): 그룹별 프레임 저장 및 품질 선별
+
+
+2.4 비디오 정보 저장
+-------------------
+스크립트: 3a.save_video_info.py
+출력 파일: extracted_frames/video_info.json
+
+저장 정보:
+  - video_file: 파일명, 경로, 크기
+  - video_metadata: CSV에서 가져온 메타데이터
+    * index, video_id, url, title, duration, duration_seconds, 
+      views, upload_date, channel
+  - video_properties: OpenCV로 분석한 비디오 속성
+    * resolution, width, height, fps, total_frames, duration_seconds
+  - extracted_frames: 추출된 프레임 상세 정보
+    * 각 프레임의 filename, path, size, time, quality_score
+
+
+2.5 ChatGPT 자동화 (프레임 평가)
+--------------------------------
+스크립트: 5.chatgpt_automation.py
+도구: Playwright MCP
+
+기능:
+  1. 기존 로그인된 Chrome 브라우저에 연결 (포트 9222)
+  2. 배치 단위 프레임 평가 (10개씩)
+  3. 이전 배치의 Video Flow Analysis를 다음 배치 프롬프트에 포함
+  4. 응답 자동 복사 및 저장
+
+프롬프트: 4.LLM_MCP_ENG.py에서 로드
+평가 기준 (각 0-10점):
+  1. Content Representativeness & Composition (최우선)
+  2. Editing Complexity & Technicality (최우선)
+  3. Technical Image Quality
+  4. Narrative & Storytelling
+  5. Advertisement Effectiveness
+  6. Visual Aesthetics & Style
+
+배치 처리:
+  - 배치 크기: 10개 프레임
+  - 총 배치 수: 54개 프레임 ÷ 10 = 6개 배치 (마지막은 4개)
+  - 각 배치 결과 저장:
+    * evaluation_result_batch_XX.json (구조화된 결과)
+    * evaluation_response_batch_XX.txt (전체 응답 텍스트)
+
+처리 완료 배치:
+  - 배치 1: 프레임 1-10
+  - 배치 2: 프레임 11-20
+  - 배치 3: 프레임 21-30
+
+주요 함수:
+  - load_video_info(): video_info.json 로드
+  - get_all_sorted_frames(): 시간순으로 모든 프레임 경로 수집
+  - extract_previous_flow_analysis_from_json(): 이전 배치의 Flow Analysis 추출
+  - build_prompt_with_previous_flow(): 이전 Flow Analysis 포함 프롬프트 생성
+  - upload_frames_and_evaluate(): ChatGPT에 프레임 업로드 및 평가 요청
+  - wait_for_chatgpt_response(): 응답 완료 대기
+  - copy_chatgpt_response_and_save(): 응답 복사 및 txt 저장
+  - parse_evaluation_response(): 응답 파싱
+  - save_evaluation_result(): JSON 형식으로 저장
+
+
+2.6 Gemini 자동화 (프레임 평가)
+--------------------------------
+스크립트: 5b.gemini_automation.py
+도구: Playwright MCP
+
+기능:
+  1. 별도 로그인된 Chrome 브라우저에 연결 (포트 9223)
+  2. ChatGPT와 동일한 배치 처리 및 Flow Analysis 포함
+  3. Gemini UI에 최적화된 이미지 업로드 및 프롬프트 전송
+
+처리 완료 배치:
+  - 배치 1: 프레임 1-10
+  - 배치 2: 프레임 11-20
+  - 배치 3: 프레임 21-30 (진행 중)
+
+결과 파일:
+  - gemini_evaluation_result_batch_XX.json
+  - gemini_evaluation_response_batch_XX.txt
+
+주요 함수:
+  - connect_to_gemini_browser(): Gemini 브라우저 연결 (포트 9223)
+  - wait_for_gemini_response(): Gemini 응답 대기
+  - copy_gemini_response_and_save(): Gemini 응답 복사 및 저장
+  - upload_frames_and_evaluate_gemini(): Gemini에 프레임 업로드 및 평가
+
+
+================================================================================
+3. 사용된 기술 및 도구
+================================================================================
+
+프로그래밍 언어: Python 3
+
+주요 라이브러리:
+  - yt-dlp: YouTube 비디오 다운로드 및 메타데이터 추출
+  - OpenCV (cv2): 비디오 처리, 프레임 추출, 이미지 품질 분석
+  - scenedetect: 장면 전환 감지
+  - Playwright MCP: 브라우저 자동화 (ChatGPT, Gemini)
+  - json, pathlib: 데이터 처리 및 파일 관리
+
+주요 기술:
+  - 히스토그램 상관관계를 이용한 이미지 유사도 계산
+  - Laplacian variance를 이용한 블러 감지
+  - 이진 탐색을 이용한 유사도 임계값 최적화
+  - Playwright를 이용한 웹 브라우저 자동화
+  - Chrome 디버깅 모드를 이용한 기존 브라우저 연결
+
+
+================================================================================
+4. 파일 구조
+================================================================================
+
+9_total_work/
+├── 1.collect_youtube_ytdlp.py          # YouTube URL 수집
+├── 2.download_youtube.py                # 비디오 다운로드
+├── 2a.check_video.py                    # 비디오 확인
+├── 3.extract_frame.py                   # 프레임 추출 및 그룹화
+├── 3a.save_video_info.py                # 비디오 정보 저장
+├── 3b.delete_video.py                   # 비디오 삭제
+├── 4.LLM_MCP.py                         # LLM 평가 프롬프트 (한국어)
+├── 4.LLM_MCP_ENG.py                     # LLM 평가 프롬프트 (영어)
+├── 5.chatgpt_automation.py              # ChatGPT 자동화
+├── 5b.gemini_automation.py              # Gemini 자동화
+├── 6._last_prompt.py                     # 최종 프레임 선택 프롬프트
+├── frame_extraction_criteria.md          # 프레임 추출 기준 문서
+├── youtube_ads_1000.csv                  # 수집된 YouTube URL 목록 (937개)
+└── downloads/
+    └── index0/
+        ├── video_0_iZXK1R_nqgc.mp4      # 다운로드된 비디오
+        └── extracted_frames/
+            ├── video_info.json           # 비디오 정보
+            ├── blurry_frames/            # 블러 프레임 (299개)
+            ├── group_01/                 # 그룹별 선별 프레임 (27개 그룹)
+            ├── group_02/
+            ├── ...
+            ├── group_27/
+            ├── evaluation_result.json                  # ChatGPT 배치 1 결과
+            ├── evaluation_result_batch_02.json        # ChatGPT 배치 2 결과
+            ├── evaluation_result_batch_03.json         # ChatGPT 배치 3 결과
+            ├── evaluation_response.txt                # ChatGPT 배치 1 전체 응답
+            ├── evaluation_response_batch_02.txt       # ChatGPT 배치 2 전체 응답
+            ├── evaluation_response_batch_03.txt       # ChatGPT 배치 3 전체 응답
+            ├── gemini_evaluation_result_batch_01.json # Gemini 배치 1 결과
+            ├── gemini_evaluation_result_batch_02.json # Gemini 배치 2 결과
+            ├── gemini_evaluation_response_batch_01.txt # Gemini 배치 1 전체 응답
+            └── gemini_evaluation_response_batch_02.txt # Gemini 배치 2 전체 응답
+
+
+================================================================================
+5. 주요 알고리즘 및 방법론
+================================================================================
+
+5.1 블러 감지
+-------------
+방법: Laplacian variance
+공식: cv2.Laplacian() 후 분산 계산
+임계값: 150.0 미만 → 블러 프레임
+
+5.2 품질 점수 계산
+-----------------
+종합 점수 = 블러 점수 × 클리핑 가중치 × 밝기 가중치 × 대비 가중치 × 색상 가중치
+
+- 블러 점수: Laplacian variance 직접 사용
+- 클리핑 가중치: 히스토그램에서 0 또는 255 픽셀 비율 기반
+- 밝기 가중치: 평균 밝기 100-180 범위 선호
+- 대비 가중치: 표준 편차 기반 (높을수록 좋음)
+- 색상 가중치: BGR 채널 분산 기반 (높을수록 풍부)
+
+5.3 이미지 유사도 계산
+----------------------
+방법: 히스토그램 상관관계
+함수: cv2.compareHist() with cv2.HISTCMP_CORREL
+결과: 0.0 ~ 1.0 (1.0에 가까울수록 유사)
+
+5.4 시간 순서 기반 그룹화
+-------------------------
+알고리즘:
+  1. 프레임을 시간 순서대로 처리
+  2. 각 프레임에 대해:
+     a. 최근 생성된 그룹들 중 5초 시간 윈도우 내의 그룹 확인
+     b. 해당 그룹들의 마지막 프레임들과 유사도 계산
+     c. 평균 유사도가 임계값 이상이면 해당 그룹에 추가
+     d. 그렇지 않으면 새 그룹 생성
+  3. 이진 탐색으로 임계값 최적화하여 목표 그룹 수 달성
+
+
+================================================================================
+6. 평가 프롬프트 상세
+================================================================================
+
+프롬프트 파일: 4.LLM_MCP_ENG.py
+
+평가 기준 (총 60점):
+  1. Content Representativeness & Composition (최우선) - 10점
+     * 프레임이 비디오의 핵심 메시지나 주요 장면을 얼마나 잘 대표하는가
+     * 제품/인물의 위치, 얼굴 선명도, 구성의 전문성
+
+  2. Editing Complexity & Technicality (최우선) - 10점
+     * 편집 기술의 복잡성과 숙련도
+     * 전환 효과, 카메라 움직임, 합성 기술
+
+  3. Technical Image Quality - 10점
+     * 기술적 화질 (해상도, 노이즈, 압축 품질)
+
+  4. Narrative & Storytelling - 10점
+     * 스토리텔링 요소
+     * 시각적 스토리 전달 능력
+
+  5. Advertisement Effectiveness - 10점
+     * 광고 효과성
+     * 제품/브랜드 강조, 메시지 명확성
+
+  6. Visual Aesthetics & Style - 10점
+     * 시각적 미학과 스타일
+     * 색감, 조명, 전반적인 미적 품질
+
+요청 사항:
+  - 각 프레임에 대해 6가지 기준으로 0-10점 평가
+  - 비디오 플로우 분석 (Video Flow Analysis):
+    * Overall storyline
+    * Key scene transitions
+    * Emphasis & climax
+    * Advertisement message / CTA
+    * Visual style & tone
+
+배치 처리 특성:
+  - 배치 2부터는 이전 배치들의 Video Flow Analysis를 프롬프트에 포함
+  - 연속적인 컨텍스트 제공으로 더 정확한 평가
+
+
+================================================================================
+7. 결과 및 성과
+================================================================================
+
+7.1 수집 단계
+-------------
+- YouTube URL: 937개 수집 완료
+- CSV 파일: youtube_ads_1000.csv
+
+7.2 프레임 추출 단계
+-------------------
+- 테스트 비디오: 1개 (index 0)
+- 총 프레임 수: 902개
+- 블러 프레임 필터링: 299개 별도 저장
+- 최종 선별 프레임: 약 38개 (27개 그룹)
+- 그룹화 정확도: 30초 영상 → 27개 그룹 (목표: 25-35개)
+
+7.3 LLM 평가 단계
+-----------------
+ChatGPT:
+  - 배치 1-3 완료
+  - 각 배치별 JSON 및 TXT 파일 저장 완료
+
+Gemini:
+  - 배치 1-2 완료
+  - 배치 3 진행 중
+  - 각 배치별 JSON 및 TXT 파일 저장 완료
+
+
+================================================================================
+8. 향후 계획
+================================================================================
+
+1. 나머지 비디오 처리
+   - 937개 비디오 모두에 대해 동일한 프로세스 적용
+   - 병렬 처리로 속도 향상
+
+2. 최종 프레임 선택
+   - 스크립트: 6._last_prompt.py
+   - 모든 배치 평가 결과를 종합하여 대표 프레임 6개 선택
+
+3. 데이터 분석
+   - 평가 결과 통계 분석
+   - 프레임 품질과 비디오 조회수 상관관계 분석
+   - 광고 효과성 패턴 분석
+
+4. 자동화 완성도 향상
+   - 오류 처리 강화
+   - 재시도 로직 추가
+   - 진행 상황 모니터링 대시보드
+
+
+================================================================================
+9. 기술적 도전 과제 및 해결
+================================================================================
+
+1. 블러 프레임 필터링
+   - 문제: 블러 임계값 설정의 어려움
+   - 해결: Laplacian variance 기반 객관적 측정, 150.0 임계값 사용
+
+2. 유사도 기반 그룹화
+   - 문제: 시간 순서 유지하면서 유사 프레임 그룹화
+   - 해결: 시간 윈도우 기반 비교, 이진 탐색으로 임계값 최적화
+
+3. Playwright 브라우저 연결
+   - 문제: 이미 로그인된 브라우저에 연결
+   - 해결: Chrome 디버깅 모드 사용 (포트 9222, 9223)
+
+4. ChatGPT/Gemini 응답 추출
+   - 문제: 복잡한 UI에서 전체 응답 텍스트 추출
+   - 해결: Copy 버튼 클릭 후 클립보드 읽기, 스냅샷에서 직접 추출 (fallback)
+
+5. 배치 간 컨텍스트 유지
+   - 문제: 이전 배치의 Flow Analysis를 다음 배치에 포함
+   - 해결: JSON 파일에서 Flow Analysis 추출 및 프롬프트에 동적 삽입
+
+
+================================================================================
+10. 참고 파일
+================================================================================
+
+문서:
+  - frame_extraction_criteria.md: 프레임 추출 기준 상세 설명
+
+스크립트:
+  - 1.collect_youtube_ytdlp.py: URL 수집
+  - 2.download_youtube.py: 비디오 다운로드
+  - 3.extract_frame.py: 프레임 추출 및 그룹화
+  - 3a.save_video_info.py: 비디오 정보 저장
+  - 5.chatgpt_automation.py: ChatGPT 자동화
+  - 5b.gemini_automation.py: Gemini 자동화
+  - 6._last_prompt.py: 최종 프레임 선택
+
+데이터:
+  - youtube_ads_1000.csv: 수집된 URL 목록
+  - downloads/index0/extracted_frames/video_info.json: 비디오 정보
+  - downloads/index0/extracted_frames/*.json: 평가 결과
+  - downloads/index0/extracted_frames/*.txt: 전체 응답 텍스트
+
+
+================================================================================
+작성 완료 일시: 2024년
+작업 디렉토리: /Users/jeff/python/9_total_work/
+================================================================================
+

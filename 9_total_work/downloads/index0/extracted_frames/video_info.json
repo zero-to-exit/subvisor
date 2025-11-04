@@ -1,0 +1,27 @@
+{
+  "video_file": {
+    "filename": "video_0_iZXK1R_nqgc.mp4",
+    "file_path": "/Users/jeff/python/9_total_work/downloads/index0/video_0_iZXK1R_nqgc.mp4",
+    "file_size_mb": 3.29
+  },
+  "video_metadata": {
+    "index": 0,
+    "video_id": "iZXK1R_nqgc",
+    "url": "https://www.youtube.com/watch?v=iZXK1R_nqgc",
+    "title": "[공익광고협의회] 2005 1분의 배려",
+    "duration": "0:31",
+    "duration_seconds": 31,
+    "views": 284084,
+    "upload_date": "",
+    "channel": "KOBACO공익광고협의회"
+  },
+  "video_properties": {
+    "resolution": "640x480",
+    "width": 640,
+    "height": 480,
+    "fps": 29.97002997002997,
+    "total_frames": 902,
+    "duration_seconds": 30.096733333333333,
+    "duration_formatted": "0:30"
+  }
+}
