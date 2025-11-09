@@ -94,6 +94,7 @@ if __name__ == "__main__":
 
     #step1. Algorithm1(all frames -> 30 frames)
     from models.algorithm1 import Algorithm1
+    exit()
     alg1 = Algorithm1(working_dir, video_path)
     alg1.extract_all_frames(ratio=0.5)
     alg1.divide_frames_into_groups(group_count = 30)
