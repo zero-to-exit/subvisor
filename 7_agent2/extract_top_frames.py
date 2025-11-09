@@ -142,71 +142,66 @@ def extract_top_frames(
     frame_indices: List[int] = []
     scores: List[float] = []
     times_sec: List[float] = []
+    frames_bgr: List[np.ndarray] = []
     
-    # 프레임을 미리 읽어서 버퍼 구성 (성능 최적화)
-    frame_buffer: List[Tuple[int, np.ndarray]] = []
-    total_frames = info['frame_count']
+    frame_idx = 0
+    prev_bgr: Optional[np.ndarray] = None
     
-    # 샘플링할 프레임만 미리 읽기
-    sampled_indices = list(range(0, total_frames, sample_interval))
-    print(f"  샘플링 대상: {len(sampled_indices)}개 프레임")
-    
-    for sample_idx in sampled_indices:
-        cap.set(cv2.CAP_PROP_POS_FRAMES, sample_idx)
+    while True:
         ret, frame = cap.read()
-        if ret:
-            frame_buffer.append((sample_idx, frame.copy()))
+        if not ret:
+            break
         
-        if sample_idx % (sample_interval * 50) == 0:
-            progress = len(frame_buffer) / len(sampled_indices) * 100
-            print(f"  프레임 읽기: {len(frame_buffer)}/{len(sampled_indices)} ({progress:.1f}%)")
-    
-    print(f"  프레임 평가 시작: {len(frame_buffer)}개")
-    
-    # 버퍼된 프레임들 평가
-    for i, (frame_idx, frame) in enumerate(frame_buffer):
-        # 이전/다음 프레임 가져오기
-        prev_bgr_local = None
-        next_bgr = None
+        # 샘플링: N프레임마다만 평가
+        if frame_idx % sample_interval == 0:
+            # 이전/다음 프레임 읽기 (액션 점수 계산용)
+            prev_bgr_local = prev_bgr
+            next_pos = cap.get(cv2.CAP_PROP_POS_FRAMES)
+            ret_next, next_bgr = cap.read()
+            
+            if not ret_next:
+                next_bgr = None
+            
+            # 특징 추출 및 점수 계산
+            features = extractor.compute_features(
+                frame,
+                prev_bgr=prev_bgr_local,
+                next_bgr=next_bgr,
+            )
+            overall_score, per_key_scores = scorer.score_features(features)
+            
+            # 벌점 적용 (무조건 배제 조건 확인)
+            # 간단한 휴리스틱으로 심한 문제 감지
+            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+            lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
+            
+            # 심한 블러 체크 (라플라시안 분산이 매우 낮으면)
+            if lap_var < 20:
+                # 점수 대폭 감소
+                overall_score *= 0.3
+            
+            # 클리핑 체크
+            hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
+            total = hist.sum() + 1e-6
+            clip_rate = (hist[:2].sum() + hist[-2:].sum()) / total
+            if clip_rate > 0.15:  # 15% 이상 클리핑
+                overall_score *= 0.5
+            
+            # 점수 저장
+            frame_indices.append(frame_idx)
+            scores.append(overall_score)
+            times_sec.append(frame_idx / info['fps'])
+            frames_bgr.append(frame.copy())
+            
+            # 다음 프레임 위치로 복원
+            if ret_next:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, next_pos)
+            
+            if frame_idx % 100 == 0:
+                print(f"  진행: {frame_idx}/{info['frame_count']} 프레임 처리 (평가 완료: {len(scores)}개)")
         
-        if i > 0:
-            prev_bgr_local = frame_buffer[i-1][1]
-        if i < len(frame_buffer) - 1:
-            next_bgr = frame_buffer[i+1][1]
-        
-        # 특징 추출 및 점수 계산
-        features = extractor.compute_features(
-            frame,
-            prev_bgr=prev_bgr_local,
-            next_bgr=next_bgr,
-        )
-        overall_score, per_key_scores = scorer.score_features(features)
-        
-        # 벌점 적용 (무조건 배제 조건 확인)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        lap_var = cv2.Laplacian(gray, cv2.CV_64F).var()
-        
-        # 심한 블러 체크
-        if lap_var < 20:
-            overall_score *= 0.3
-        
-        # 클리핑 체크 (간단화)
-        hist = cv2.calcHist([gray], [0], None, [256], [0, 256]).flatten()
-        total = hist.sum() + 1e-6
-        clip_rate = (hist[:2].sum() + hist[-2:].sum()) / total
-        if clip_rate > 0.15:
-            overall_score *= 0.5
-        
-        # 점수 저장
-        frame_indices.append(frame_idx)
-        scores.append(overall_score)
-        times_sec.append(frame_idx / info['fps'])
-        
-        if (i + 1) % 50 == 0:
-            print(f"  평가 진행: {i+1}/{len(frame_buffer)} ({((i+1)/len(frame_buffer)*100):.1f}%)")
-    
-    # 프레임 버퍼를 다시 사용하기 위해 저장
-    frames_bgr = [frame for _, frame in frame_buffer]
+        prev_bgr = frame.copy()
+        frame_idx += 1
     
     cap.release()
     
@@ -223,10 +218,8 @@ def extract_top_frames(
     
     # 다양성을 고려한 최종 선별 (pHash 기반)
     print(f"다양성을 고려한 최종 선별 중...")
-    # 인덱스 매핑 생성 (더 빠른 조회)
-    idx_to_pos = {idx: i for i, idx in enumerate(frame_indices)}
-    selected_frames_bgr = [frames_bgr[idx_to_pos[idx]] for idx in selected_by_coverage]
-    selected_scores = [scores[idx_to_pos[idx]] for idx in selected_by_coverage]
+    selected_frames_bgr = [frames_bgr[frame_indices.index(idx)] for idx in selected_by_coverage]
+    selected_scores = [scores[frame_indices.index(idx)] for idx in selected_by_coverage]
     
     diverse_indices = select_diverse_top_k(
         selected_frames_bgr,
@@ -281,7 +274,7 @@ if __name__ == "__main__":
             video_path=video_path,
             num_frames=20,
             output_dir=output_dir,
-            sample_interval=15,  # 15프레임마다 샘플링 (성능 최적화)
+            sample_interval=5,  # 5프레임마다 샘플링 (성능 최적화)
         )
         
         print("\n" + "=" * 80)

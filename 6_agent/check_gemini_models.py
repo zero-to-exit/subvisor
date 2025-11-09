@@ -13,6 +13,7 @@ for model in genai.list_models():
         print(f"  지원 메서드: {model.supported_generation_methods}")
         print()
 
+#hell worlds.
 
 
 

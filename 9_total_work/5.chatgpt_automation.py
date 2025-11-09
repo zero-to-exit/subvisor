@@ -50,19 +50,20 @@ def load_video_info(video_info_path: str) -> Dict:
 def get_all_sorted_frames(frames_dir: Path) -> List[str]:
     """
     그룹 폴더에서 시간 순서대로 모든 프레임 파일 경로를 정렬하여 반환
-    각 그룹의 모든 프레임을 수집 (그룹당 2장씩)
+    각 그룹에서 첫 번째 프레임만 선택 (시간순)
     """
     frame_files = []
     
-    # group_XX 폴더에서 모든 프레임 수집
+    # group_XX 폴더에서 첫 번째 프레임만 수집
     group_dirs = sorted([d for d in frames_dir.iterdir() 
                         if d.is_dir() and d.name.startswith('group_')],
                        key=lambda x: int(x.name.split('_')[1]))
     
     for group_dir in group_dirs:
-        # 각 그룹의 모든 프레임 찾기
+        # 각 그룹의 첫 번째 프레임 찾기
         jpg_files = sorted(list(group_dir.glob('*.jpg')))
-        frame_files.extend([str(f) for f in jpg_files])
+        if jpg_files:
+            frame_files.append(str(jpg_files[0]))
     
     # 시간순으로 재정렬 (파일명에서 시간 추출)
     def extract_time(filepath: str) -> float:
@@ -943,22 +944,6 @@ def main():
     
     previous_flow_analyses = []
     output_dir = base_dir / "extracted_frames"
-    
-    # 배치 1의 Flow Analysis가 이미 있으면 로드 (이전 실행에서 저장된 경우)
-    batch1_result_path = output_dir / "evaluation_result.json"
-    if batch1_result_path.exists():
-        flow_analysis = extract_previous_flow_analysis_from_json(batch1_result_path)
-        if flow_analysis:
-            previous_flow_analyses.append(flow_analysis)
-            print(f"✅ 배치 1 Flow Analysis 로드 완료")
-    
-    # 배치 2의 Flow Analysis도 있으면 로드 (이미 처리된 경우)
-    batch2_result_path = output_dir / "evaluation_result_batch_02.json"
-    if batch2_result_path.exists():
-        flow_analysis = extract_previous_flow_analysis_from_json(batch2_result_path)
-        if flow_analysis:
-            previous_flow_analyses.append(flow_analysis)
-            print(f"✅ 배치 2 Flow Analysis 로드 완료")
     
     for batch_num in range(total_batches):
         offset = batch_num * BATCH_SIZE
